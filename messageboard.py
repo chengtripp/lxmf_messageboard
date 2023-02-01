@@ -6,10 +6,11 @@ import shortuuid
 import time
 
 display_name = "SolarExpress Message Board"
-configdir = "~/retic/"
-identitypath = configdir+"storage/identity"
+configdir = os.getcwd()
+identitypath = configdir+"/storage/identity"
+redis_db = 2
 
-r = redis.Redis(db=2, decode_responses=True)
+r = redis.Redis(db=redis_db, decode_responses=True)
 
 def setup_lxmf():
 
@@ -94,10 +95,18 @@ def send_message(destination_hash, message_content):
       # Send it
       message_router.handle_outbound(lxm)
 
+def announce_check():
+    if r.exists('announce'):
+        RNS.log('Recent announcement', RNS.LOG_DEBUG)
+    else:
+        r.set('announce', 1)
+        r.expire('announce', 1800)
+        announce_now(local_lxmf_destination)
+        RNS.log('Announcement sent, expr set 1800 seconds', RNS.LOG_INFO)
 
 
 # Start Reticulum and print out all the debug messages
-reticulum = RNS.Reticulum(loglevel=RNS.LOG_EXTREME)
+reticulum = RNS.Reticulum(loglevel=RNS.LOG_VERBOSE)
 
 # Create a Identity.
 current_identity = setup_lxmf()
@@ -117,17 +126,11 @@ message_router.register_delivery_callback(lxmf_delivery)
 # Announce node properties
 
 RNS.log('LXMF Router ready to receive on: {}'.format(RNS.prettyhexrep(local_lxmf_destination.hash)), RNS.LOG_INFO)
-
-if r.exists('announce'):
-    RNS.log('Recent announcement', RNS.LOG_INFO)
-else:
-    r.set('announce', 1)
-    r.expire('announce', 1800)
-    announce_now(local_lxmf_destination)
-    RNS.log('Announcement sent, expr set 1800 seconds', RNS.LOG_INFO)
+announce_check()
 
 while True:
 
+    # Work through redis message queue
     for i in range(0, r.llen('message_queue')):
         message_id = r.lpop('message_queue')
         message = r.get(message_id)
@@ -135,4 +138,9 @@ while True:
         destination_hash = message_id.split('_')[0]
         RNS.log('{} {}'.format(destination_hash, message), RNS.LOG_INFO)
         send_message(destination_hash, message)
+
+    # Check whether we need to make another announcement
+    announce_check()
+
+    #Sleep
     time.sleep(10)
