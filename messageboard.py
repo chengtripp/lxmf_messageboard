@@ -9,11 +9,11 @@ display_name = "SolarExpress Message Board"
 configdir = os.getcwd()
 identitypath = configdir+"/storage/identity"
 redis_db = 2
+max_messages = 20
 
 r = redis.Redis(db=redis_db, decode_responses=True)
 
 def setup_lxmf():
-
     if os.path.isfile(identitypath):
         identity = RNS.Identity.from_file(identitypath)
         RNS.log('Loaded identity from file', RNS.LOG_INFO)
@@ -57,43 +57,43 @@ def announce_now(lxmf_destination):
     lxmf_destination.announce()
 
 def send_message(destination_hash, message_content):
-  try:
-    # Make a binary destination hash from a hexadecimal string
-    destination_hash = bytes.fromhex(destination_hash)
+    try:
+      # Make a binary destination hash from a hexadecimal string
+      destination_hash = bytes.fromhex(destination_hash)
 
-  except Exception as e:
-    RNS.log("Invalid destination hash", RNS.LOG_ERROR)
-    return
+    except Exception as e:
+      RNS.log("Invalid destination hash", RNS.LOG_ERROR)
+      return
 
-  # Check that size is correct
-  if not len(destination_hash) == RNS.Reticulum.TRUNCATED_HASHLENGTH//8:
-    RNS.log("Invalid destination hash length", RNS.LOG_ERROR)
-
-  else:
-    # Length of address was correct, let's try to recall the
-    # corresponding Identity
-    destination_identity = RNS.Identity.recall(destination_hash)
-
-    if destination_identity == None:
-      # No path/identity known, we'll have to abort or request one
-      RNS.log("Could not recall an Identity for the requested address. You have probably never received an announce from it. Try requesting a path from the network first. In fact, let's do this now :)", RNS.LOG_ERROR)
-      RNS.Transport.request_path(destination_hash)
-      RNS.log("OK, a path was requested. If the network knows a path, you will receive an announce with the Identity data shortly.", RNS.LOG_INFO)
+    # Check that size is correct
+    if not len(destination_hash) == RNS.Reticulum.TRUNCATED_HASHLENGTH//8:
+      RNS.log("Invalid destination hash length", RNS.LOG_ERROR)
 
     else:
-      # We know the identity for the destination hash, let's
-      # reconstruct a destination object.
-      lxmf_destination = RNS.Destination(destination_identity, RNS.Destination.OUT, RNS.Destination.SINGLE, "lxmf", "delivery")
+      # Length of address was correct, let's try to recall the
+      # corresponding Identity
+      destination_identity = RNS.Identity.recall(destination_hash)
 
-      # Create a new message object
-      lxm = LXMF.LXMessage(lxmf_destination, local_lxmf_destination, message_content, title="Reply", desired_method=LXMF.LXMessage.DIRECT)
+      if destination_identity == None:
+        # No path/identity known, we'll have to abort or request one
+        RNS.log("Could not recall an Identity for the requested address. You have probably never received an announce from it. Try requesting a path from the network first. In fact, let's do this now :)", RNS.LOG_ERROR)
+        RNS.Transport.request_path(destination_hash)
+        RNS.log("OK, a path was requested. If the network knows a path, you will receive an announce with the Identity data shortly.", RNS.LOG_INFO)
 
-      # You can optionally tell LXMF to try to send the message
-      # as a propagated message if a direct link fails
-      lxm.try_propagation_on_fail = True
+      else:
+        # We know the identity for the destination hash, let's
+        # reconstruct a destination object.
+        lxmf_destination = RNS.Destination(destination_identity, RNS.Destination.OUT, RNS.Destination.SINGLE, "lxmf", "delivery")
 
-      # Send it
-      message_router.handle_outbound(lxm)
+        # Create a new message object
+        lxm = LXMF.LXMessage(lxmf_destination, local_lxmf_destination, message_content, title="Reply", desired_method=LXMF.LXMessage.DIRECT)
+
+        # You can optionally tell LXMF to try to send the message
+        # as a propagated message if a direct link fails
+        lxm.try_propagation_on_fail = True
+
+        # Send it
+        message_router.handle_outbound(lxm)
 
 def announce_check():
     if r.exists('announce'):
@@ -104,6 +104,9 @@ def announce_check():
         announce_now(local_lxmf_destination)
         RNS.log('Announcement sent, expr set 1800 seconds', RNS.LOG_INFO)
 
+def prune_messageboard(max_messages):
+    RNS.log('Pruning message board', RNS.LOG_DEBUG)
+    r.ltrim('message_board_general', 0, max_messages -1)
 
 # Start Reticulum and print out all the debug messages
 reticulum = RNS.Reticulum(loglevel=RNS.LOG_VERBOSE)
@@ -141,6 +144,9 @@ while True:
 
     # Check whether we need to make another announcement
     announce_check()
+
+    # Keep the message board trim
+    prune_messageboard(max_messages)
 
     #Sleep
     time.sleep(10)
