@@ -1,21 +1,41 @@
 #!/bin/python3
 import time
-import redis
-r = redis.Redis(db=2, decode_responses=True)
+import os
+import RNS.vendor.umsgpack as msgpack
 
-print('`!`F222`Bddd`cSolarExpress Message Board')
+message_board_peer = 'b4812e4f193420b1763f8f5fa31fbc29'
+userdir = os.path.expanduser("~")
+
+if os.path.isdir("/etc/nomadmb") and os.path.isfile("/etc/nomadmb/config"):
+    configdir = "/etc/nomadmb"
+elif os.path.isdir(userdir+"/.config/nomadmb") and os.path.isfile(userdir+"/.config/nomadmb/config"):
+    configdir = userdir+"/.config/nomadmb"
+else:
+    configdir = userdir+"/.nomadmb"
+
+storagepath  = configdir+"/storage"
+if not os.path.isdir(storagepath):
+    os.makedirs(storagepath)
+
+boardpath = configdir+"/storage/board"
+
+print('`!`F222`Bddd`cNomadNet Message Board')
 
 print('-')
 print('`a`b`f')
 print("")
-print("To add a message to the board just converse with the SolarExpress Message Board at <ad713cd3fedf36cc190f0cb89c4be1ff>, peers are assigned a unique username")
-print("Built with Python and Redis")
+print("To add a message to the board just converse with the NomadNet Message Board at `[lxmf@{}]".format(message_board_peer))
 time_string = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
 print("Last Updated: {}".format(time_string))
 print("")
 print('>Messages')
 print("  Date       Time    Username     Message")
-for i in range(0, r.llen('message_board_general')):
-    message_content = r.lindex('message_board_general', i)
-    print("`a{}".format(message_content))
+f = open(boardpath, "rb")
+board_contents = msgpack.unpack(f)
+board_contents.reverse()
+
+for content in board_contents:
+    print("`a{}".format(content.rstrip()))
     print("")
+
+f.close()
