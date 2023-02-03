@@ -1,17 +1,11 @@
 import RNS
 import LXMF
-import os
-import redis
-import shortuuid
-import time
+import os, time
+from queue import Queue
+import RNS.vendor.umsgpack as msgpack
 
-display_name = "SolarExpress Message Board"
-configdir = os.getcwd()
-identitypath = configdir+"/storage/identity"
-redis_db = 2
+display_name = "NomadNet Message Board"
 max_messages = 20
-
-r = redis.Redis(db=redis_db, decode_responses=True)
 
 def setup_lxmf():
     if os.path.isfile(identitypath):
@@ -29,29 +23,43 @@ def lxmf_delivery(message):
     RNS.log("A message was received: "+str(message.content.decode('utf-8')))
 
     message_content = message.content.decode('utf-8')
-
     source_hash_text = RNS.hexrep(message.source_hash, delimit=False)
 
-    if r.exists(source_hash_text):
-        uuid_user = r.get(source_hash_text)
-    else:
-        RNS.log('Generate new username', RNS.LOG_INFO)
-        uuid_user = shortuuid.ShortUUID().random(length=12)
-        r.set(source_hash_text, uuid_user)
+    #Create username (just first 5 char of your addr)
+    username = source_hash_text[0:5]
 
-        message_id = '{}_{}'.format(source_hash_text, time.time())
-        r.set(message_id, 'Hi, your unique username is {}, this is linked to your nomad address'.format(uuid_user))
-        r.lpush('message_queue', message_id)
-
-    RNS.log('UUID: {}'.format(uuid_user), RNS.LOG_INFO)
+    RNS.log('Username: {}'.format(username), RNS.LOG_INFO)
 
     time_string = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(message.timestamp))
-    new_message = '{} {}: {}'.format(time_string, uuid_user, message_content)
-    r.lpush('message_board_general', new_message)
+    new_message = '{} {}: {}\n'.format(time_string, username, message_content)
 
-    message_id = '{}_{}'.format(source_hash_text, time.time())
-    r.set(message_id, 'Your message has been added to the messageboard')
-    r.lpush('message_queue', message_id)
+    # Push message to board
+    # First read message board (if it exists
+    if os.path.isfile(boardpath):
+        f = open(boardpath, "rb")
+        message_board = msgpack.unpack(f)
+        f.close()
+    else:
+        message_board = []
+
+    #Check we aren't doubling up (this can sometimes happen if there is an error initially and it then gets fixed)
+    if new_message not in message_board:
+        # Append our new message to the list
+        message_board.append(new_message)
+
+    # Prune the message board if needed
+    while len(message_board) > max_messages:
+        RNS.log('Pruning Message Board')
+        message_board.pop(0)
+
+    # Now open the board and write the updated list
+    f = open(boardpath, "wb")
+    msgpack.pack(message_board, f)
+    f.close()
+
+    # Send reply
+    message_reply = '{}_{}_Your message has been added to the messageboard'.format(source_hash_text, time.time())
+    q.put(message_reply)
 
 def announce_now(lxmf_destination):
     lxmf_destination.announce()
@@ -96,17 +104,44 @@ def send_message(destination_hash, message_content):
         message_router.handle_outbound(lxm)
 
 def announce_check():
-    if r.exists('announce'):
+    if os.path.isfile(announcepath):
+        f = open(announcepath, "r")
+        announce = int(f.readline())
+        f.close()
+    else:
+        RNS.log('failed to open announcepath', RNS.LOG_DEBUG)
+        announce = 1
+
+    if announce > int(time.time()):
         RNS.log('Recent announcement', RNS.LOG_DEBUG)
     else:
-        r.set('announce', 1)
-        r.expire('announce', 1800)
+        f = open(announcepath, "w")
+        next_announce = int(time.time()) + 1800
+        f.write(str(next_announce))
+        f.close()
         announce_now(local_lxmf_destination)
         RNS.log('Announcement sent, expr set 1800 seconds', RNS.LOG_INFO)
 
-def prune_messageboard(max_messages):
-    RNS.log('Pruning message board', RNS.LOG_DEBUG)
-    r.ltrim('message_board_general', 0, max_messages -1)
+#Setup Paths and Config Files
+userdir = os.path.expanduser("~")
+
+if os.path.isdir("/etc/nomadmb") and os.path.isfile("/etc/nomadmb/config"):
+    configdir = "/etc/nomadmb"
+elif os.path.isdir(userdir+"/.config/nomadmb") and os.path.isfile(userdir+"/.config/nomadmb/config"):
+    configdir = userdir+"/.config/nomadmb"
+else:
+    configdir = userdir+"/.nomadmb"
+
+storagepath  = configdir+"/storage"
+if not os.path.isdir(storagepath):
+    os.makedirs(storagepath)
+
+identitypath = configdir+"/storage/identity"
+announcepath = configdir+"/storage/announce"
+boardpath = configdir+"/storage/board"
+
+# Message Queue
+q = Queue(maxsize = 5)
 
 # Start Reticulum and print out all the debug messages
 reticulum = RNS.Reticulum(loglevel=RNS.LOG_VERBOSE)
@@ -133,20 +168,17 @@ announce_check()
 
 while True:
 
-    # Work through redis message queue
-    for i in range(0, r.llen('message_queue')):
-        message_id = r.lpop('message_queue')
-        message = r.get(message_id)
-        r.delete(message_id)
-        destination_hash = message_id.split('_')[0]
+    # Work through internal message queue
+    for i in list(q.queue):
+        message_id = q.get()
+        split_message = message_id.split('_')
+        destination_hash = split_message[0]
+        message = split_message[2]
         RNS.log('{} {}'.format(destination_hash, message), RNS.LOG_INFO)
         send_message(destination_hash, message)
 
     # Check whether we need to make another announcement
     announce_check()
-
-    # Keep the message board trim
-    prune_messageboard(max_messages)
 
     #Sleep
     time.sleep(10)
