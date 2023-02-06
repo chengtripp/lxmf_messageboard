@@ -33,6 +33,17 @@ def lxmf_delivery(message):
     time_string = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(message.timestamp))
     new_message = '{} {}: {}\n'.format(time_string, username, message_content)
 
+    # If an allowed file is present then check to see if a user is authorised
+    if os.path.isfile(allowedpath):
+        f = open(allowedpath, "rb")
+        allowed_list = msgpack.unpack(f)
+        f.close()
+        if source_hash_text not in allowed_list:
+            # Send reply
+            message_reply = '{}_{}_You aren\'t authorised to post to this message board '.format(source_hash_text, time.time())
+            q.put(message_reply)
+            return
+
     # Push message to board
     # First read message board (if it exists
     if os.path.isfile(boardpath):
@@ -139,6 +150,7 @@ if not os.path.isdir(storagepath):
 identitypath = configdir+"/storage/identity"
 announcepath = configdir+"/storage/announce"
 boardpath = configdir+"/storage/board"
+allowedpath = configdir+"/storage/allowed"
 
 # Message Queue
 q = Queue(maxsize = 5)
